@@ -7,35 +7,37 @@
       <version>1.0.1</version>
     </parent>
 
-    <groupId>com.bikeemotion</groupId>
+    <groupId>com.bikeemotion.jdk7</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
-    <version>1.0.3-SNAPSHOT</version>
+    <version>1.0.0-SNAPSHOT</version>
     <packaging>bundle</packaging>
   
     <name>Quartz Hazelcast JobStore</name>
 
     <issueManagement>
-      <url>https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore/issues</url>
+      <url>https://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore/issues</url>
       <system>GitHub Issues</system>
     </issueManagement>
 
     <scm>
-      <url>https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore/</url>
-      <connection>scm:git:git://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore.git</connection>
-      <developerConnection>scm:git:git://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore.git</developerConnection>
+      <url>https://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore/</url>
+      <connection>scm:git:git://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore.git</connection>
+      <developerConnection>scm:git:git://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore.git</developerConnection>
     </scm>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- Compiler -->
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-    
+        <maven.compiler.source>1.7</maven.compiler.source>
+        <maven.compiler.target>1.7</maven.compiler.target>
+
         <hazelcast.version>3.2.1</hazelcast.version>
         <quartz.version>2.2.3</quartz.version>
         <guava.version>17.0</guava.version>
         <joda.time.version>2.4</joda.time.version>
-    
+
+        <assertj.version>2.6.0</assertj.version>
+
         <osgi.import.pkg>*</osgi.import.pkg>
         <osgi.export.pkg>com.bikeemotion.quartz.jobstore.*</osgi.export.pkg>
     </properties>
@@ -104,6 +106,14 @@
           <artifactId>slf4j-log4j12</artifactId>
           <scope>test</scope>
         </dependency>
+        <!-- Test libraries -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

@@ -2,6 +2,8 @@ Quartz-Scheduler Hazelcast Job Store [![Build Status](https://travis-ci.org/Flav
 ====================================
 An implementation of a Quartz Scheduler Job Store using Hazelcast distributed Maps and Sets.
 
+### Fork compatible with JDK7
+
 This implementation is based on [Ameausoone/quartz-hazelcast-jobstore](https://github.com/Ameausoone/quartz-hazelcast-jobstore).
 
 ### About Quartz
@@ -20,7 +22,7 @@ Hazelcast is an in-memory open source software data grid based on Java. By havin
 ### Adding Dependency
 ```
 <dependency>
-    <groupId>com.bikeemotion</groupId>
+    <groupId>com.bikeemotion.jdk7</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
     <version>1.0.2</version>
 </dependency>

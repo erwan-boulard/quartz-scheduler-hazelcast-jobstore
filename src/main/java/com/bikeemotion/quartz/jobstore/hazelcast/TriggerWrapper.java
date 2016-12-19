@@ -1,15 +1,14 @@
 package com.bikeemotion.quartz.jobstore.hazelcast;
 
 import org.quartz.DateBuilder;
-
-import java.io.Serializable;
-
 import org.quartz.JobKey;
 import org.quartz.TriggerKey;
 import org.quartz.spi.OperableTrigger;
 
+import java.io.Serializable;
 
-public class TriggerWrapper implements Serializable {
+
+public final class TriggerWrapper implements Serializable, Comparable<TriggerWrapper> {
 
     private static final long serialVersionUID = 1L;
 
@@ -39,7 +38,7 @@ public class TriggerWrapper implements Serializable {
         key = trigger.getKey();
         this.jobKey = trigger.getJobKey();
         this.state = state;
-        
+
         // Change to normal if acquired is not released in 5 seconds
         if (state == TriggerState.ACQUIRED) {
             acquiredAt = DateBuilder.newDate().build().getTime();
@@ -54,13 +53,13 @@ public class TriggerWrapper implements Serializable {
     }
 
     public static TriggerWrapper newTriggerWrapper(TriggerWrapper tw,
-            TriggerState state) {
+                                                   TriggerState state) {
 
         return new TriggerWrapper(tw.trigger, state);
     }
 
     public static TriggerWrapper newTriggerWrapper(OperableTrigger trigger,
-            TriggerState state) {
+                                                   TriggerState state) {
 
         TriggerWrapper tw = new TriggerWrapper(trigger, state);
         return tw;
@@ -96,19 +95,23 @@ public class TriggerWrapper implements Serializable {
     }
 
     public Long getAcquiredAt() {
-      
+
         return acquiredAt;
     }
 
     @Override
     public String toString() {
 
-        return "TriggerWrapper{" 
-            + "trigger=" + trigger
-            + ", state=" + state
-            + ", nextFireTime=" + getNextFireTime()
-            + ", acquiredAt=" + getAcquiredAt()
-            + '}';
+        return "TriggerWrapper{"
+                + "trigger=" + trigger
+                + ", state=" + state
+                + ", nextFireTime=" + getNextFireTime()
+                + ", acquiredAt=" + getAcquiredAt()
+                + '}';
     }
 
+    @Override
+    public int compareTo(TriggerWrapper o) {
+        return this.getNextFireTime().compareTo(o.getNextFireTime());
+    }
 }
