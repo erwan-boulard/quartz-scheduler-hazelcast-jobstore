@@ -24,7 +24,7 @@ Hazelcast is an in-memory open source software data grid based on Java. By havin
 <dependency>
     <groupId>com.bikeemotion.jdk7</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 
@@ -37,7 +37,7 @@ Note that you can use Hazelcast MapStores to store all the data in your in-memor
 # Testing it
 #### Pre-requisites
 
-* JDK 8 or newer
+* JDK 7 or newer
 * Maven 3.1.0 or newer
 
 #### Clone

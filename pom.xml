@@ -7,7 +7,7 @@
       <version>1.0.1</version>
     </parent>
 
-    <groupId>com.bikeemotion.jdk7</groupId>
+    <groupId>com.github.erwan-boulard</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
     <version>1.0.3-SNAPSHOT</version>
     <packaging>bundle</packaging>
