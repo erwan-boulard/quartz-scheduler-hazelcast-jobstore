@@ -9,7 +9,7 @@
 
     <groupId>com.github.erwan-boulard</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.4-SNAPSHOT</version>
     <packaging>bundle</packaging>
   
     <name>Quartz Hazelcast JobStore</name>
