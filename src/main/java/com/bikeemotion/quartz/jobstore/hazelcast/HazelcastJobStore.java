@@ -831,6 +831,7 @@ public class HazelcastJobStore implements JobStore, Serializable {
    * @param maxCount
    *          maximum number of trigger keys allow to acquired in the
    *          returning list.
+   * @throws JobPersistenceException when a JobPersistenceException occurs
    */
   @Override
   public List<OperableTrigger> acquireNextTriggers(long noLaterThan,
@@ -1234,9 +1235,9 @@ public class HazelcastJobStore implements JobStore, Serializable {
 
   /**
    * Set the max time which a acquired trigger must be released.
-   * It should be > 30000, since quartz executes acquireNextTriggers in a 30000 interval
+   * It should be up to 30000, since quartz executes acquireNextTriggers in a 30000 interval
    *
-   * @param triggerReleaseThreshold
+   * @param triggerReleaseThreshold the triggerReleaseThreshold
    */
   public void setTriggerReleaseThreshold(long triggerReleaseThreshold) {
     if (triggerReleaseThreshold > 30000) {
