@@ -22,7 +22,7 @@ Hazelcast is an in-memory open source software data grid based on Java. By havin
 ### Adding Dependency
 ```
 <dependency>
-    <groupId>com.bikeemotion.jdk7</groupId>
+    <groupId>com.github.erwan-boulard</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
     <version>1.0.3</version>
 </dependency>
@@ -42,7 +42,7 @@ Note that you can use Hazelcast MapStores to store all the data in your in-memor
 
 #### Clone
 ```
-git clone https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore.git
+git clone https://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore.git
 cd quartz-scheduler-hazelcast-jobstore
 ```
 #### Build
