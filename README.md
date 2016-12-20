@@ -24,7 +24,7 @@ Hazelcast is an in-memory open source software data grid based on Java. By havin
 <dependency>
     <groupId>com.github.erwan-boulard</groupId>
     <artifactId>quartz-hazelcast-jobstore</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.6</version>
 </dependency>
 ```
 
