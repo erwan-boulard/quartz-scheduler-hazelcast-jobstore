@@ -156,14 +156,16 @@ public class QuartzTest extends AbstractTest {
 
         JobDetail job1 = buildJob("Job1", DEFAULT_GROUP, MyJob.class);
 
-        scheduler.scheduleJob(job1, buildTrigger("key1", DEFAULT_GROUP, job1, DateTime.now().plusMillis(200).getMillis()));
-        Thread.sleep(5);
-        scheduler.scheduleJob(buildTrigger("key2", DEFAULT_GROUP, job1, DateTime.now().plusMillis(100).getMillis()));
-        Thread.sleep(5);
-        scheduler.scheduleJob(buildTrigger("key3", DEFAULT_GROUP, job1, DateTime.now().plusMillis(300).getMillis()));
-        Thread.sleep(5);
+        scheduler.scheduleJob(job1, buildTrigger("key1", DEFAULT_GROUP, job1, DateTime.now().plusMillis(500).getMillis()));
+        Thread.sleep(100);
 
-        Thread.sleep(350);
+        scheduler.scheduleJob(buildTrigger("key2", DEFAULT_GROUP, job1, DateTime.now().plusMillis(100).getMillis()));
+        Thread.sleep(100);
+
+        scheduler.scheduleJob(buildTrigger("key3", DEFAULT_GROUP, job1, DateTime.now().plusMillis(400).getMillis()));
+        Thread.sleep(100);
+
+        Thread.sleep(1000);
 
         assertEquals(MyJob.count, 3);
         assertEquals(MyJob.triggerKeys.poll(), "key2");
