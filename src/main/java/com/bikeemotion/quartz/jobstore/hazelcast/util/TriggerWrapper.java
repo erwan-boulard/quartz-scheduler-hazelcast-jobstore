@@ -1,4 +1,4 @@
-package com.bikeemotion.quartz.jobstore.hazelcast;
+package com.bikeemotion.quartz.jobstore.hazelcast.util;
 
 import org.quartz.DateBuilder;
 import org.quartz.JobKey;
@@ -7,7 +7,9 @@ import org.quartz.spi.OperableTrigger;
 
 import java.io.Serializable;
 
-
+/**
+ * Wraper of the HazelCast's TriggerWrapper.
+ */
 public final class TriggerWrapper implements Serializable, Comparable<TriggerWrapper> {
 
     private static final long serialVersionUID = 1L;
@@ -48,19 +50,14 @@ public final class TriggerWrapper implements Serializable, Comparable<TriggerWra
     }
 
     public static TriggerWrapper newTriggerWrapper(OperableTrigger trigger) {
-
         return newTriggerWrapper(trigger, TriggerState.NORMAL);
     }
 
-    public static TriggerWrapper newTriggerWrapper(TriggerWrapper tw,
-                                                   TriggerState state) {
-
+    public static TriggerWrapper newTriggerWrapper(TriggerWrapper tw, TriggerState state) {
         return new TriggerWrapper(tw.trigger, state);
     }
 
-    public static TriggerWrapper newTriggerWrapper(OperableTrigger trigger,
-                                                   TriggerState state) {
-
+    public static TriggerWrapper newTriggerWrapper(OperableTrigger trigger, TriggerState state) {
         TriggerWrapper tw = new TriggerWrapper(trigger, state);
         return tw;
     }
@@ -80,22 +77,18 @@ public final class TriggerWrapper implements Serializable, Comparable<TriggerWra
 
     @Override
     public int hashCode() {
-
         return key.hashCode();
     }
 
     public OperableTrigger getTrigger() {
-
         return this.trigger;
     }
 
     public TriggerState getState() {
-
         return state;
     }
 
     public Long getAcquiredAt() {
-
         return acquiredAt;
     }
 

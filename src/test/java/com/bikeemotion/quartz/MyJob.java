@@ -11,9 +11,6 @@ import java.util.Date;
 import java.util.LinkedList;
 import java.util.Queue;
 
-/**
- * https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore/blob/master/src/test/java/com/bikeemotion/quartz/MyJob.java<br>
- */
 public class MyJob implements Job, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(MyJob.class);

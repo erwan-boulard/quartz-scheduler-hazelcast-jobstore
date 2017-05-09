@@ -1,44 +1,20 @@
 package com.bikeemotion.quartz.jobstore.hazelcast;
 
-import com.hazelcast.core.Hazelcast;
-import com.hazelcast.core.HazelcastInstance;
-import com.hazelcast.core.IMap;
-import com.hazelcast.core.ISet;
-import com.hazelcast.core.MultiMap;
-import com.hazelcast.query.Predicate;
-import org.joda.time.format.DateTimeFormatter;
-import org.joda.time.format.ISODateTimeFormat;
+import com.bikeemotion.quartz.jobstore.hazelcast.util.TriggerByJobPredicate;
+import com.bikeemotion.quartz.jobstore.hazelcast.util.TriggerState;
+import com.bikeemotion.quartz.jobstore.hazelcast.util.TriggerWrapper;
+import com.bikeemotion.quartz.jobstore.hazelcast.util.TriggersPredicate;
+import com.hazelcast.core.*;
 import org.quartz.Calendar;
-import org.quartz.DateBuilder;
-import org.quartz.JobDetail;
-import org.quartz.JobKey;
-import org.quartz.JobPersistenceException;
-import org.quartz.ObjectAlreadyExistsException;
-import org.quartz.SchedulerConfigException;
-import org.quartz.SchedulerException;
-import org.quartz.Trigger;
-import org.quartz.TriggerKey;
+import org.quartz.*;
 import org.quartz.impl.matchers.GroupMatcher;
 import org.quartz.impl.matchers.StringMatcher;
-import org.quartz.spi.ClassLoadHelper;
-import org.quartz.spi.JobStore;
-import org.quartz.spi.OperableTrigger;
-import org.quartz.spi.SchedulerSignaler;
-import org.quartz.spi.TriggerFiredBundle;
-import org.quartz.spi.TriggerFiredResult;
+import org.quartz.spi.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.collect.Lists.newArrayList;
@@ -46,526 +22,478 @@ import static com.google.common.collect.Sets.newHashSet;
 
 /**
  * Cette classe permet au framework Quartz de stocker ses donnees de travail dans Hazelcast.<br>
- *  https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore<br>
- *  <br>
- *  https://github.com/FlavioF/quartz-scheduler-hazelcast-jobstore/blob/master/src/main/java/
- *     com/bikeemotion/quartz/jobstore/hazelcast/HazelcastJobStore.java <br>
+ * https://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore<br>
+ * <br>
+ * https://github.com/erwan-boulard/quartz-scheduler-hazelcast-jobstore/blob/master/src/main/java/
+ * com/bikeemotion/quartz/jobstore/hazelcast/HazelcastJobStore.java <br>
  */
 public class HazelcastJobStore implements JobStore, Serializable {
 
-  /** Logger. */
-  private static final Logger LOG = LoggerFactory.getLogger(HazelcastJobStore.class);
-  /** Serial ID. */
-  private static final long serialVersionUID = -1113941051117911896L;
-  /** Instance Hazelcast */
-  private static HazelcastInstance hazelcastClient;
+    /**
+     * Logger.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(HazelcastJobStore.class);
+    /**
+     * Serial ID.
+     */
+    private static final long serialVersionUID = -1113941051117911896L;
+    /**
+     * Instance Hazelcast
+     */
+    private static HazelcastInstance hazelcastClient;
 
-  /**
-   * @param aHazelcastClient a setter.
-   */
-  public static void setHazelcastClient(final HazelcastInstance aHazelcastClient) {
+    /**
+     * Map interne Quartz.
+     */
+    private static final String HC_JOB_STORE_MAP_JOB = "job-store-map-job";
+    private static final String HC_JOB_STORE_MAP_JOB_BY_GROUP_MAP = "job-store-map-job-by-group-map";
+    private static final String HC_JOB_STORE_TRIGGER_BY_KEY_MAP = "job-store-trigger-by-key-map";
+    private static final String HC_JOB_STORE_TRIGGER_KEY_BY_GROUP_MAP = "job-trigger-key-by-group-map";
+    private static final String HC_JOB_STORE_PAUSED_TRIGGER_GROUPS = "job-paused-trigger-groups";
+    private static final String HC_JOB_STORE_PAUSED_JOB_GROUPS = "job-paused-job-groups";
+    private static final String HC_JOB_CALENDAR_MAP = "job-calendar-map";
 
-    hazelcastClient = aHazelcastClient;
-  }
+    private static long ftrCtr = System.currentTimeMillis();
 
-  /** Map interne Quartz. */
-  private final String HC_JOB_STORE_MAP_JOB = "job-store-map-job";
-  private final String HC_JOB_STORE_MAP_JOB_BY_GROUP_MAP = "job-store-map-job-by-group-map";
-  private final String HC_JOB_STORE_TRIGGER_BY_KEY_MAP = "job-store-trigger-by-key-map";
-  private final String HC_JOB_STORE_TRIGGER_KEY_BY_GROUP_MAP = "job-trigger-key-by-group-map";
-  private final String HC_JOB_STORE_PAUSED_TRIGGER_GROUPS = "job-paused-trigger-groups";
-  private final String HC_JOB_STORE_PAUSED_JOB_GROUPS = "job-paused-job-groups";
-  private final String HC_JOB_CALENDAR_MAP = "job-calendar-map";
+    private SchedulerSignaler schedSignaler;
+    private IMap<JobKey, JobDetail> jobsByKey;
+    private IMap<TriggerKey, TriggerWrapper> triggersByKey;
+    private MultiMap<String, JobKey> jobsByGroup;
+    private MultiMap<String, TriggerKey> triggersByGroup;
+    private IMap<String, Calendar> calendarsByName;
+    private ISet<String> pausedTriggerGroups;
+    private ISet<String> pausedJobGroups;
+    private volatile boolean schedulerRunning = false;
+    private long misfireThreshold = 5000;
+    private long triggerReleaseThreshold = 60000;
 
-  private static long ftrCtr = System.currentTimeMillis();
+    private String instanceId;
+    private String instanceName;
+    private boolean shutdownHazelcastOnShutdown = true;
 
-  private SchedulerSignaler schedSignaler;
-  private IMap<JobKey, JobDetail> jobsByKey;
-  private IMap<TriggerKey, TriggerWrapper> triggersByKey;
-  private MultiMap<String, JobKey> jobsByGroup;
-  private MultiMap<String, TriggerKey> triggersByGroup;
-  private IMap<String, Calendar> calendarsByName;
-  private ISet<String> pausedTriggerGroups;
-  private ISet<String> pausedJobGroups;
-  private volatile boolean schedulerRunning = false;
-  private long misfireThreshold = 5000;
-  private long triggerReleaseThreshold = 60000;
+    @Override
+    public void initialize(ClassLoadHelper loadHelper, SchedulerSignaler signaler)
+            throws SchedulerConfigException {
 
-  private String instanceId;
-  private String instanceName;
-  private boolean shutdownHazelcastOnShutdown = true;
+        LOG.debug("Initializing Hazelcast Job Store..");
 
-  public static final DateTimeFormatter FORMATTER = ISODateTimeFormat.basicDateTimeNoMillis();
+        this.schedSignaler = signaler;
 
-  @Override
-  public void initialize(ClassLoadHelper loadHelper, SchedulerSignaler signaler)
-          throws SchedulerConfigException {
-
-    LOG.debug("Initializing Hazelcast Job Store..");
-
-    this.schedSignaler = signaler;
-
-    if (hazelcastClient == null) {
-      LOG.warn("Starting new local hazelcast client since not hazelcast instance setted before starting scheduler.");
-      hazelcastClient = Hazelcast.newHazelcastInstance();
-    }
-
-    // initializing hazelcast maps
-    LOG.debug("Initializing hazelcast maps...");
-    jobsByKey = hazelcastClient.getMap(HC_JOB_STORE_MAP_JOB);
-    triggersByKey = hazelcastClient.getMap(HC_JOB_STORE_TRIGGER_BY_KEY_MAP);
-    jobsByGroup = hazelcastClient.getMultiMap(HC_JOB_STORE_MAP_JOB_BY_GROUP_MAP);
-    triggersByGroup = hazelcastClient.getMultiMap(HC_JOB_STORE_TRIGGER_KEY_BY_GROUP_MAP);
-    pausedTriggerGroups = hazelcastClient.getSet(HC_JOB_STORE_PAUSED_TRIGGER_GROUPS);
-    pausedJobGroups = hazelcastClient.getSet(HC_JOB_STORE_PAUSED_JOB_GROUPS);
-    calendarsByName = hazelcastClient.getMap(HC_JOB_CALENDAR_MAP);
-
-    triggersByKey.addIndex("nextFireTime", true);
-
-    LOG.debug("Hazelcast Job Store Initialized.");
-  }
-
-  @Override
-  public void schedulerStarted()
-          throws SchedulerException {
-
-    LOG.info("Hazelcast Job Store started successfully");
-    schedulerRunning = true;
-  }
-
-  @Override
-  public void schedulerPaused() {
-
-    schedulerRunning = false;
-
-  }
-
-  @Override
-  public void schedulerResumed() {
-
-    schedulerRunning = true;
-  }
-
-  @Override
-  public void shutdown() {
-
-    if (shutdownHazelcastOnShutdown) {
-      hazelcastClient.shutdown();
-    }
-  }
-
-  @Override
-  public boolean supportsPersistence() {
-
-    return true;
-  }
-
-  @Override
-  public long getEstimatedTimeToReleaseAndAcquireTrigger() {
-
-    return 25;
-  }
-
-  @Override
-  public boolean isClustered() {
-
-    return true;
-  }
-
-  @Override
-  public void storeJobAndTrigger(final JobDetail newJob,
-                                 final OperableTrigger newTrigger)
-          throws ObjectAlreadyExistsException,
-          JobPersistenceException {
-
-    storeJob(newJob, false);
-    storeTrigger(newTrigger, false);
-  }
-
-  @Override
-  public void storeJob(final JobDetail job, boolean replaceExisting)
-          throws ObjectAlreadyExistsException, JobPersistenceException {
-
-    final JobDetail newJob = (JobDetail) job.clone();
-    final JobKey newJobKey = newJob.getKey();
-
-    if (jobsByKey.containsKey(newJobKey) && !replaceExisting) {
-      throw new ObjectAlreadyExistsException(newJob);
-    }
-
-    jobsByKey.lock(newJobKey, 5, TimeUnit.SECONDS);
-    try {
-      jobsByKey.set(newJobKey, newJob);
-      jobsByGroup.put(newJobKey.getGroup(), newJobKey);
-    } finally {
-      try {
-        jobsByKey.unlock(newJobKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public void storeJobsAndTriggers(
-          final Map<JobDetail, Set<? extends Trigger>> triggersAndJobs,
-          boolean replace)
-          throws ObjectAlreadyExistsException,
-          JobPersistenceException {
-
-    if (!replace) {
-
-      // validate if anything already exists
-      for (final Map.Entry<JobDetail, Set<? extends Trigger>> e : triggersAndJobs
-              .entrySet()) {
-        final JobDetail jobDetail = e.getKey();
-        if (checkExists(jobDetail.getKey())) {
-          throw new ObjectAlreadyExistsException(jobDetail);
+        if (hazelcastClient == null) {
+            LOG.warn("Starting new local hazelcast client since not hazelcast instance setted before starting scheduler.");
+            hazelcastClient = Hazelcast.newHazelcastInstance();
         }
-        for (final Trigger trigger : e.getValue()) {
-          if (checkExists(trigger.getKey())) {
-            throw new ObjectAlreadyExistsException(trigger);
-          }
-        }
-      }
+
+        // initializing hazelcast maps
+        LOG.debug("Initializing hazelcast maps...");
+        jobsByKey = hazelcastClient.getMap(HC_JOB_STORE_MAP_JOB);
+        triggersByKey = hazelcastClient.getMap(HC_JOB_STORE_TRIGGER_BY_KEY_MAP);
+        jobsByGroup = hazelcastClient.getMultiMap(HC_JOB_STORE_MAP_JOB_BY_GROUP_MAP);
+        triggersByGroup = hazelcastClient.getMultiMap(HC_JOB_STORE_TRIGGER_KEY_BY_GROUP_MAP);
+        pausedTriggerGroups = hazelcastClient.getSet(HC_JOB_STORE_PAUSED_TRIGGER_GROUPS);
+        pausedJobGroups = hazelcastClient.getSet(HC_JOB_STORE_PAUSED_JOB_GROUPS);
+        calendarsByName = hazelcastClient.getMap(HC_JOB_CALENDAR_MAP);
+
+        triggersByKey.addIndex("nextFireTime", true);
+
+        LOG.debug("Hazelcast Job Store Initialized.");
     }
-    // do bulk add...
-    for (final Map.Entry<JobDetail, Set<? extends Trigger>> e : triggersAndJobs
-            .entrySet()) {
-      storeJob(e.getKey(), true);
-      for (final Trigger trigger : e.getValue()) {
-        storeTrigger((OperableTrigger) trigger, true);
-      }
+
+    @Override
+    public void schedulerStarted() throws SchedulerException {
+        LOG.info("Hazelcast Job Store started successfully");
+        schedulerRunning = true;
     }
 
-  }
+    @Override
+    public void schedulerPaused() {
+        schedulerRunning = false;
+    }
 
-  @Override
-  public boolean removeJob(final JobKey jobKey)
-          throws JobPersistenceException {
+    @Override
+    public void schedulerResumed() {
+        schedulerRunning = true;
+    }
 
-    boolean removed = false;
-    if (jobsByKey.containsKey(jobKey)) {
-      final List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
-
-      for (final OperableTrigger trigger : triggersForJob) {
-        if (!removeTrigger(trigger.getKey(), false)) {
-          LOG.warn("Error deleting trigger [{}] of job [{}] .", trigger, jobKey);
-          return false;
+    @Override
+    public void shutdown() {
+        if (shutdownHazelcastOnShutdown) {
+            hazelcastClient.shutdown();
         }
-      }
+    }
 
-      jobsByKey.lock(jobKey, 5, TimeUnit.MILLISECONDS);
-      try {
-        jobsByGroup.remove(jobKey.getGroup(), jobKey);
-        removed = jobsByKey.remove(jobKey) != null;
-      } finally {
+    @Override
+    public boolean supportsPersistence() {
+        return true;
+    }
+
+    @Override
+    public long getEstimatedTimeToReleaseAndAcquireTrigger() {
+        return 25;
+    }
+
+    @Override
+    public boolean isClustered() {
+        return true;
+    }
+
+    @Override
+    public void storeJobAndTrigger(final JobDetail newJob, final OperableTrigger newTrigger)
+            throws ObjectAlreadyExistsException, JobPersistenceException {
+        storeJob(newJob, false);
+        storeTrigger(newTrigger, false);
+    }
+
+    @Override
+    public void storeJob(final JobDetail job, boolean replaceExisting)
+            throws ObjectAlreadyExistsException, JobPersistenceException {
+
+        final JobDetail newJob = (JobDetail) job.clone();
+        final JobKey newJobKey = newJob.getKey();
+
+        if (jobsByKey.containsKey(newJobKey) && !replaceExisting) {
+            throw new ObjectAlreadyExistsException(newJob);
+        }
+
+        jobsByKey.lock(newJobKey, 5, TimeUnit.SECONDS);
         try {
-          jobsByKey.unlock(jobKey);
-        } catch (IllegalMonitorStateException ex) {
-          LOG.warn("Error unlocking since it is already released.", ex);
-        }
-      }
-    }
-    return removed;
-  }
-
-  @Override
-  public boolean removeJobs(final List<JobKey> jobKeys)
-          throws JobPersistenceException {
-
-    boolean allRemoved = true;
-
-    for (final JobKey key : jobKeys) {
-      allRemoved = removeJob(key) && allRemoved;
-    }
-
-    return allRemoved;
-  }
-
-  @Override
-  public JobDetail retrieveJob(final JobKey jobKey)
-          throws JobPersistenceException {
-
-    return jobKey != null && jobsByKey.containsKey(jobKey)
-            ? (JobDetail) jobsByKey
-            .get(jobKey).clone()
-            : null;
-  }
-
-  @Override
-  public void storeTrigger(OperableTrigger trigger, boolean replaceExisting)
-          throws ObjectAlreadyExistsException, JobPersistenceException {
-
-    final OperableTrigger newTrigger = (OperableTrigger) trigger.clone();
-    final TriggerKey triggerKey = newTrigger.getKey();
-
-    triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
-    try {
-      boolean containsKey = triggersByKey.containsKey(triggerKey);
-      if (containsKey && !replaceExisting) {
-        throw new ObjectAlreadyExistsException(newTrigger);
-      }
-
-      if (retrieveJob(newTrigger.getJobKey()) == null) {
-        throw new JobPersistenceException("The job (" + newTrigger.getJobKey()
-                + ") referenced by the trigger does not exist.");
-      }
-
-      boolean shouldBePaused = pausedJobGroups.contains(newTrigger.getJobKey()
-              .getGroup()) || pausedTriggerGroups.contains(triggerKey.getGroup());
-      final TriggerState state = shouldBePaused
-              ? TriggerState.PAUSED
-              : TriggerState.NORMAL;
-
-      final TriggerWrapper newTriggerWrapper = TriggerWrapper.newTriggerWrapper(newTrigger, state);
-      triggersByKey.set(newTriggerWrapper.key, newTriggerWrapper);
-      triggersByGroup.put(triggerKey.getGroup(), triggerKey);
-    } finally {
-      try {
-        triggersByKey.unlock(triggerKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public boolean removeTrigger(TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    return removeTrigger(triggerKey, true);
-  }
-
-  @Override
-  public boolean removeTriggers(final List<TriggerKey> triggerKeys)
-          throws JobPersistenceException {
-
-    boolean allRemoved = true;
-    for (TriggerKey key : triggerKeys) {
-      allRemoved = removeTrigger(key) && allRemoved;
-    }
-
-    return allRemoved;
-  }
-
-  @Override
-  public boolean replaceTrigger(final TriggerKey triggerKey,
-                                final OperableTrigger newTrigger)
-          throws JobPersistenceException {
-
-    newTrigger.setKey(triggerKey);
-    storeTrigger(newTrigger, true);
-    return true;
-  }
-
-  @Override
-  public OperableTrigger retrieveTrigger(final TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    return triggerKey != null && triggersByKey.containsKey(triggerKey)
-            ? (OperableTrigger) triggersByKey
-            .get(triggerKey).getTrigger().clone()
-            : null;
-  }
-
-  @Override
-  public boolean checkExists(JobKey jobKey)
-          throws JobPersistenceException {
-
-    return jobsByKey.containsKey(jobKey);
-  }
-
-  @Override
-  public boolean checkExists(TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    return triggersByKey.containsKey(triggerKey);
-  }
-
-  @Override
-  public void clearAllSchedulingData()
-          throws JobPersistenceException {
-
-    jobsByKey.clear();
-    triggersByKey.clear();
-    jobsByGroup.clear();
-    triggersByGroup.clear();
-    calendarsByName.clear();
-    pausedTriggerGroups.clear();
-    pausedJobGroups.clear();
-  }
-
-  @Override
-  public void storeCalendar(final String calName, final Calendar cal,
-                            boolean replaceExisting, boolean updateTriggers)
-          throws ObjectAlreadyExistsException, JobPersistenceException {
-
-    final Calendar calendar = (Calendar) cal.clone();
-    if (calendarsByName.containsKey(calName) && !replaceExisting) {
-      throw new ObjectAlreadyExistsException("Calendar with name '" + calName
-              + "' already exists.");
-    } else {
-      calendarsByName.set(calName, calendar);
-    }
-  }
-
-  @Override
-  public boolean removeCalendar(String calName)
-          throws JobPersistenceException {
-
-    int numRefs = 0;
-    for (TriggerWrapper trigger : triggersByKey.values()) {
-      OperableTrigger trigg = trigger.trigger;
-      if (trigg.getCalendarName() != null
-              && trigg.getCalendarName().equals(calName)) {
-        numRefs++;
-      }
-    }
-
-    if (numRefs > 0) {
-      throw new JobPersistenceException(
-              "Calender cannot be removed if it referenced by a Trigger!");
-    }
-    return (calendarsByName.remove(calName) != null);
-  }
-
-  @Override
-  public Calendar retrieveCalendar(String calName)
-          throws JobPersistenceException {
-
-    return calendarsByName.get(calName);
-  }
-
-  @Override
-  public int getNumberOfJobs()
-          throws JobPersistenceException {
-
-    return jobsByKey.size();
-  }
-
-  @Override
-  public int getNumberOfTriggers()
-          throws JobPersistenceException {
-
-    return triggersByKey.size();
-  }
-
-  @Override
-  public int getNumberOfCalendars()
-          throws JobPersistenceException {
-
-    return calendarsByName.size();
-  }
-
-  @Override
-  public Set<JobKey> getJobKeys(final GroupMatcher<JobKey> matcher)
-          throws JobPersistenceException {
-
-    Set<JobKey> outList = null;
-    final StringMatcher.StringOperatorName operator = matcher
-            .getCompareWithOperator();
-    final String groupNameCompareValue = matcher.getCompareToValue();
-
-    switch (operator) {
-      case EQUALS:
-        final Collection<JobKey> jobKeys = jobsByGroup.get(groupNameCompareValue);
-        if (jobKeys != null) {
-          outList = new HashSet<>();
-          for (JobKey jobKey : jobKeys) {
-            if (jobKey != null) {
-              outList.add(jobKey);
+            jobsByKey.set(newJobKey, newJob);
+            jobsByGroup.put(newJobKey.getGroup(), newJobKey);
+        } finally {
+            try {
+                jobsByKey.unlock(newJobKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
             }
-          }
-        }
-        break;
-      default:
-        for (String groupName : jobsByGroup.keySet()) {
-          if (operator.evaluate(groupName, groupNameCompareValue)) {
-            if (outList == null) {
-              outList = new HashSet<>();
-            }
-            for (JobKey jobKey : jobsByGroup.get(groupName)) {
-              if (jobKey != null) {
-                outList.add(jobKey);
-              }
-            }
-          }
         }
     }
-    return outList == null
-            ? java.util.Collections.<JobKey> emptySet()
-            : outList;
-  }
 
-  @Override
-  public Set<TriggerKey> getTriggerKeys(GroupMatcher<TriggerKey> matcher)
-          throws JobPersistenceException {
+    @Override
+    public void storeJobsAndTriggers(final Map<JobDetail, Set<? extends Trigger>> triggersAndJobs, boolean replace)
+            throws ObjectAlreadyExistsException, JobPersistenceException {
 
-    Set<TriggerKey> outList = null;
-    StringMatcher.StringOperatorName operator = matcher
-            .getCompareWithOperator();
-    String groupNameCompareValue = matcher.getCompareToValue();
-    switch (operator) {
-      case EQUALS:
-        Collection<TriggerKey> triggerKeys = triggersByGroup
-                .get(groupNameCompareValue);
-        if (triggerKeys != null) {
-          outList = newHashSet();
-          for (TriggerKey triggerKey : triggerKeys) {
-            if (triggerKey != null) {
-              outList.add(triggerKey);
+        if (!replace) {
+
+            // validate if anything already exists
+            for (final Map.Entry<JobDetail, Set<? extends Trigger>> e : triggersAndJobs
+                    .entrySet()) {
+                final JobDetail jobDetail = e.getKey();
+                if (checkExists(jobDetail.getKey())) {
+                    throw new ObjectAlreadyExistsException(jobDetail);
+                }
+                for (final Trigger trigger : e.getValue()) {
+                    if (checkExists(trigger.getKey())) {
+                        throw new ObjectAlreadyExistsException(trigger);
+                    }
+                }
             }
-          }
         }
-        break;
-      default:
-        for (String groupName : triggersByGroup.keySet()) {
-          if (operator.evaluate(groupName, groupNameCompareValue)) {
-            if (outList == null) {
-              outList = newHashSet();
+        // do bulk add...
+        for (final Map.Entry<JobDetail, Set<? extends Trigger>> e : triggersAndJobs
+                .entrySet()) {
+            storeJob(e.getKey(), true);
+            for (final Trigger trigger : e.getValue()) {
+                storeTrigger((OperableTrigger) trigger, true);
             }
-            for (TriggerKey triggerKey : triggersByGroup.get(groupName)) {
-              if (triggerKey != null) {
-                outList.add(triggerKey);
-              }
+        }
+
+    }
+
+    @Override
+    public boolean removeJob(final JobKey jobKey) throws JobPersistenceException {
+
+        boolean removed = false;
+        if (jobsByKey.containsKey(jobKey)) {
+            final List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
+
+            for (final OperableTrigger trigger : triggersForJob) {
+                if (!removeTrigger(trigger.getKey(), false)) {
+                    LOG.warn("Error deleting trigger [{}] of job [{}] .", trigger, jobKey);
+                    return false;
+                }
             }
-          }
+
+            jobsByKey.lock(jobKey, 5, TimeUnit.MILLISECONDS);
+            try {
+                jobsByGroup.remove(jobKey.getGroup(), jobKey);
+                removed = jobsByKey.remove(jobKey) != null;
+            } finally {
+                try {
+                    jobsByKey.unlock(jobKey);
+                } catch (IllegalMonitorStateException ex) {
+                    LOG.warn("Error unlocking since it is already released.", ex);
+                }
+            }
+        }
+        return removed;
+    }
+
+    @Override
+    public boolean removeJobs(final List<JobKey> jobKeys) throws JobPersistenceException {
+
+        boolean allRemoved = true;
+
+        for (final JobKey key : jobKeys) {
+            allRemoved = removeJob(key) && allRemoved;
+        }
+
+        return allRemoved;
+    }
+
+    @Override
+    public JobDetail retrieveJob(final JobKey jobKey) throws JobPersistenceException {
+
+        return jobKey != null && jobsByKey.containsKey(jobKey)
+                ? (JobDetail) jobsByKey
+                .get(jobKey).clone()
+                : null;
+    }
+
+    @Override
+    public void storeTrigger(OperableTrigger trigger, boolean replaceExisting)
+            throws ObjectAlreadyExistsException, JobPersistenceException {
+
+        final OperableTrigger newTrigger = (OperableTrigger) trigger.clone();
+        final TriggerKey triggerKey = newTrigger.getKey();
+
+        triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
+        try {
+            boolean containsKey = triggersByKey.containsKey(triggerKey);
+            if (containsKey && !replaceExisting) {
+                throw new ObjectAlreadyExistsException(newTrigger);
+            }
+
+            if (retrieveJob(newTrigger.getJobKey()) == null) {
+                throw new JobPersistenceException("The job (" + newTrigger.getJobKey()
+                        + ") referenced by the trigger does not exist.");
+            }
+
+            boolean shouldBePaused = pausedJobGroups.contains(newTrigger.getJobKey()
+                    .getGroup()) || pausedTriggerGroups.contains(triggerKey.getGroup());
+            final TriggerState state = shouldBePaused
+                    ? TriggerState.PAUSED
+                    : TriggerState.NORMAL;
+
+            final TriggerWrapper newTriggerWrapper = TriggerWrapper.newTriggerWrapper(newTrigger, state);
+            triggersByKey.set(newTriggerWrapper.key, newTriggerWrapper);
+            triggersByGroup.put(triggerKey.getGroup(), triggerKey);
+        } finally {
+            try {
+                triggersByKey.unlock(triggerKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
         }
     }
-    return outList == null
-            ? java.util.Collections.<TriggerKey> emptySet()
-            : outList;
-  }
 
-  @Override
-  public List<String> getJobGroupNames()
-          throws JobPersistenceException {
-
-    return newArrayList(jobsByGroup.keySet());
-  }
-
-  @Override
-  public List<String> getTriggerGroupNames()
-          throws JobPersistenceException {
-
-    return new LinkedList<>(triggersByGroup.keySet());
-  }
-
-  @Override
-  public List<String> getCalendarNames()
-          throws JobPersistenceException {
-
-    return new LinkedList<>(calendarsByName.keySet());
-  }
-
-  @Override
-  public List<OperableTrigger> getTriggersForJob(final JobKey jobKey)
-          throws JobPersistenceException {
-
-    if (jobKey == null) {
-      return Collections.emptyList();
+    @Override
+    public boolean removeTrigger(TriggerKey triggerKey) throws JobPersistenceException {
+        return removeTrigger(triggerKey, true);
     }
+
+    @Override
+    public boolean removeTriggers(final List<TriggerKey> triggerKeys) throws JobPersistenceException {
+        boolean allRemoved = true;
+        for (TriggerKey key : triggerKeys) {
+            allRemoved = removeTrigger(key) && allRemoved;
+        }
+
+        return allRemoved;
+    }
+
+    @Override
+    public boolean replaceTrigger(final TriggerKey triggerKey, final OperableTrigger newTrigger)
+            throws JobPersistenceException {
+        newTrigger.setKey(triggerKey);
+        storeTrigger(newTrigger, true);
+        return true;
+    }
+
+    @Override
+    public OperableTrigger retrieveTrigger(final TriggerKey triggerKey) throws JobPersistenceException {
+
+        return triggerKey != null && triggersByKey.containsKey(triggerKey)
+                ? (OperableTrigger) triggersByKey
+                .get(triggerKey).getTrigger().clone()
+                : null;
+    }
+
+    @Override
+    public boolean checkExists(JobKey jobKey) throws JobPersistenceException {
+
+        return jobsByKey.containsKey(jobKey);
+    }
+
+    @Override
+    public boolean checkExists(TriggerKey triggerKey) throws JobPersistenceException {
+        return triggersByKey.containsKey(triggerKey);
+    }
+
+    @Override
+    public void clearAllSchedulingData() throws JobPersistenceException {
+        jobsByKey.clear();
+        triggersByKey.clear();
+        jobsByGroup.clear();
+        triggersByGroup.clear();
+        calendarsByName.clear();
+        pausedTriggerGroups.clear();
+        pausedJobGroups.clear();
+    }
+
+    @Override
+    public void storeCalendar(final String calName, final Calendar cal,
+                              boolean replaceExisting, boolean updateTriggers)
+            throws ObjectAlreadyExistsException, JobPersistenceException {
+
+        final Calendar calendar = (Calendar) cal.clone();
+        if (calendarsByName.containsKey(calName) && !replaceExisting) {
+            throw new ObjectAlreadyExistsException("Calendar with name '" + calName
+                    + "' already exists.");
+        } else {
+            calendarsByName.set(calName, calendar);
+        }
+    }
+
+    @Override
+    public boolean removeCalendar(String calName) throws JobPersistenceException {
+
+        int numRefs = 0;
+        for (TriggerWrapper trigger : triggersByKey.values()) {
+            OperableTrigger trigg = trigger.trigger;
+            if (trigg.getCalendarName() != null
+                    && trigg.getCalendarName().equals(calName)) {
+                numRefs++;
+            }
+        }
+
+        if (numRefs > 0) {
+            throw new JobPersistenceException(
+                    "Calender cannot be removed if it referenced by a Trigger!");
+        }
+        return (calendarsByName.remove(calName) != null);
+    }
+
+    @Override
+    public Calendar retrieveCalendar(String calName) throws JobPersistenceException {
+        return calendarsByName.get(calName);
+    }
+
+    @Override
+    public int getNumberOfJobs() throws JobPersistenceException {
+        return jobsByKey.size();
+    }
+
+    @Override
+    public int getNumberOfTriggers() throws JobPersistenceException {
+        return triggersByKey.size();
+    }
+
+    @Override
+    public int getNumberOfCalendars() throws JobPersistenceException {
+        return calendarsByName.size();
+    }
+
+    @Override
+    public Set<JobKey> getJobKeys(final GroupMatcher<JobKey> matcher)
+            throws JobPersistenceException {
+
+        Set<JobKey> outList = null;
+        final StringMatcher.StringOperatorName operator = matcher
+                .getCompareWithOperator();
+        final String groupNameCompareValue = matcher.getCompareToValue();
+
+        switch (operator) {
+            case EQUALS:
+                final Collection<JobKey> jobKeys = jobsByGroup.get(groupNameCompareValue);
+                if (jobKeys != null) {
+                    outList = new HashSet<>();
+                    for (JobKey jobKey : jobKeys) {
+                        if (jobKey != null) {
+                            outList.add(jobKey);
+                        }
+                    }
+                }
+                break;
+            default:
+                for (String groupName : jobsByGroup.keySet()) {
+                    if (operator.evaluate(groupName, groupNameCompareValue)) {
+                        if (outList == null) {
+                            outList = new HashSet<>();
+                        }
+                        for (JobKey jobKey : jobsByGroup.get(groupName)) {
+                            if (jobKey != null) {
+                                outList.add(jobKey);
+                            }
+                        }
+                    }
+                }
+        }
+        return outList == null
+                ? java.util.Collections.<JobKey>emptySet()
+                : outList;
+    }
+
+    @Override
+    public Set<TriggerKey> getTriggerKeys(GroupMatcher<TriggerKey> matcher)
+            throws JobPersistenceException {
+
+        Set<TriggerKey> outList = null;
+        StringMatcher.StringOperatorName operator = matcher
+                .getCompareWithOperator();
+        String groupNameCompareValue = matcher.getCompareToValue();
+        switch (operator) {
+            case EQUALS:
+                Collection<TriggerKey> triggerKeys = triggersByGroup
+                        .get(groupNameCompareValue);
+                if (triggerKeys != null) {
+                    outList = newHashSet();
+                    for (TriggerKey triggerKey : triggerKeys) {
+                        if (triggerKey != null) {
+                            outList.add(triggerKey);
+                        }
+                    }
+                }
+                break;
+            default:
+                for (String groupName : triggersByGroup.keySet()) {
+                    if (operator.evaluate(groupName, groupNameCompareValue)) {
+                        if (outList == null) {
+                            outList = newHashSet();
+                        }
+                        for (TriggerKey triggerKey : triggersByGroup.get(groupName)) {
+                            if (triggerKey != null) {
+                                outList.add(triggerKey);
+                            }
+                        }
+                    }
+                }
+        }
+        return outList == null
+                ? java.util.Collections.<TriggerKey>emptySet()
+                : outList;
+    }
+
+    @Override
+    public List<String> getJobGroupNames() throws JobPersistenceException {
+        return newArrayList(jobsByGroup.keySet());
+    }
+
+    @Override
+    public List<String> getTriggerGroupNames() throws JobPersistenceException {
+        return new LinkedList<>(triggersByGroup.keySet());
+    }
+
+    @Override
+    public List<String> getCalendarNames() throws JobPersistenceException {
+        return new LinkedList<>(calendarsByName.keySet());
+    }
+
+    @Override
+    public List<OperableTrigger> getTriggersForJob(final JobKey jobKey) throws JobPersistenceException {
+
+        if (jobKey == null) {
+            return Collections.emptyList();
+        }
 
         /*
         // Lambda fonction non compatible JDK 7 :
@@ -574,565 +502,541 @@ public class HazelcastJobStore implements JobStore, Serializable {
                 .map(v -> (OperableTrigger) v.getTrigger())
                 .collect(Collectors.toList());
                 */
-    // Code compatible JDK 7 :
-    final List<OperableTrigger> returnList = new ArrayList<>();
-    for (TriggerWrapper v : triggersByKey.values(new TriggerByJobPredicate(jobKey))) {
-      returnList.add(v.getTrigger());
-    }
-    return returnList;
-  }
-
-  @Override
-  public void pauseTrigger(TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
-    try {
-      final TriggerWrapper newTrigger = TriggerWrapper.newTriggerWrapper(triggersByKey.get(triggerKey), TriggerState.PAUSED);
-      triggersByKey.set(triggerKey, newTrigger);
-    } finally {
-      try {
-        triggersByKey.unlock(triggerKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public org.quartz.Trigger.TriggerState getTriggerState(TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
-    org.quartz.Trigger.TriggerState result = org.quartz.Trigger.TriggerState.NONE;
-    try {
-      TriggerWrapper tw = triggersByKey.get(triggerKey);
-      if (tw != null) {
-        result = TriggerState.toClassicTriggerState(tw.getState());
-      }
-    } finally {
-      try {
-        triggersByKey.unlock(triggerKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-    return result;
-  }
-
-  @Override
-  public void resumeTrigger(TriggerKey triggerKey)
-          throws JobPersistenceException {
-
-    triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
-    try {
-      if (schedulerRunning) {
-        final TriggerWrapper newTrigger = TriggerWrapper.newTriggerWrapper(triggersByKey.get(triggerKey), TriggerState.NORMAL);
-        triggersByKey.set(newTrigger.key, newTrigger);
-      }
-    } finally {
-      try {
-        triggersByKey.unlock(triggerKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public Collection<String> pauseTriggers(GroupMatcher<TriggerKey> matcher)
-          throws JobPersistenceException {
-
-    List<String> pausedGroups = new LinkedList<>();
-    StringMatcher.StringOperatorName operator = matcher.getCompareWithOperator();
-    switch (operator) {
-      case EQUALS:
-        if (pausedTriggerGroups.add(matcher.getCompareToValue())) {
-          pausedGroups.add(matcher.getCompareToValue());
+        // Code compatible JDK 7 :
+        final List<OperableTrigger> returnList = new ArrayList<>();
+        for (TriggerWrapper v : triggersByKey.values(new TriggerByJobPredicate(jobKey))) {
+            returnList.add(v.getTrigger());
         }
-        break;
-      default:
-        for (String group : triggersByGroup.keySet()) {
-          if (operator.evaluate(group, matcher.getCompareToValue())) {
-            if (pausedTriggerGroups.add(matcher.getCompareToValue())) {
-              pausedGroups.add(group);
+        return returnList;
+    }
+
+    @Override
+    public void pauseTrigger(TriggerKey triggerKey) throws JobPersistenceException {
+
+        triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
+        try {
+            final TriggerWrapper newTrigger = TriggerWrapper.newTriggerWrapper(triggersByKey.get(triggerKey), TriggerState.PAUSED);
+            triggersByKey.set(triggerKey, newTrigger);
+        } finally {
+            try {
+                triggersByKey.unlock(triggerKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
             }
-          }
         }
     }
 
-    for (String pausedGroup : pausedGroups) {
-      Set<TriggerKey> keys = getTriggerKeys(GroupMatcher.triggerGroupEquals(pausedGroup));
-      for (TriggerKey key : keys) {
-        pauseTrigger(key);
-      }
-    }
-    return pausedGroups;
-  }
+    @Override
+    public org.quartz.Trigger.TriggerState getTriggerState(TriggerKey triggerKey)
+            throws JobPersistenceException {
 
-  @Override
-  public Collection<String> resumeTriggers(GroupMatcher<TriggerKey> matcher)
-          throws JobPersistenceException {
-
-    Set<String> resumeGroups = new HashSet<>();
-    Set<TriggerKey> keys = getTriggerKeys(matcher);
-    for (TriggerKey triggerKey : keys) {
-      resumeGroups.add(triggerKey.getGroup());
-      TriggerWrapper tw = triggersByKey.get(triggerKey);
-      OperableTrigger trigger = tw.getTrigger();
-      String jobGroup = trigger.getJobKey().getGroup();
-      if (pausedJobGroups.contains(jobGroup)) {
-        continue;
-      }
-      resumeTrigger(triggerKey);
-    }
-    for (String group : resumeGroups) {
-      pausedTriggerGroups.remove(group);
-    }
-    return new ArrayList<>(resumeGroups);
-  }
-
-  @Override
-  public void pauseJob(JobKey jobKey)
-          throws JobPersistenceException {
-
-    boolean found = jobsByKey.containsKey(jobKey);
-    if (!found) {
-      return;
-    }
-    jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
-    try {
-      List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
-      for (OperableTrigger trigger : triggersForJob) {
-        pauseTrigger(trigger.getKey());
-      }
-    } finally {
-      try {
-        jobsByKey.unlock(jobKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public void resumeJob(JobKey jobKey)
-          throws JobPersistenceException {
-
-    boolean found = jobsByKey.containsKey(jobKey);
-    if (!found) {
-      return;
-    }
-    jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
-    try {
-      List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
-      for (OperableTrigger trigger : triggersForJob) {
-        resumeTrigger(trigger.getKey());
-      }
-    } finally {
-      try {
-        jobsByKey.unlock(jobKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
-    }
-  }
-
-  @Override
-  public Collection<String> pauseJobs(GroupMatcher<JobKey> groupMatcher)
-          throws JobPersistenceException {
-
-    List<String> pausedGroups = new LinkedList<>();
-    StringMatcher.StringOperatorName operator = groupMatcher
-            .getCompareWithOperator();
-    switch (operator) {
-      case EQUALS:
-        if (pausedJobGroups.add(groupMatcher.getCompareToValue())) {
-          pausedGroups.add(groupMatcher.getCompareToValue());
-        }
-        break;
-      default:
-        for (String jobGroup : jobsByGroup.keySet()) {
-          if (operator.evaluate(jobGroup, groupMatcher.getCompareToValue())) {
-            if (pausedJobGroups.add(jobGroup)) {
-              pausedGroups.add(jobGroup);
+        triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
+        org.quartz.Trigger.TriggerState result = org.quartz.Trigger.TriggerState.NONE;
+        try {
+            TriggerWrapper tw = triggersByKey.get(triggerKey);
+            if (tw != null) {
+                result = TriggerState.toClassicTriggerState(tw.getState());
             }
-          }
+        } finally {
+            try {
+                triggersByKey.unlock(triggerKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public void resumeTrigger(TriggerKey triggerKey) throws JobPersistenceException {
+
+        triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
+        try {
+            if (schedulerRunning) {
+                final TriggerWrapper newTrigger = TriggerWrapper.newTriggerWrapper(triggersByKey.get(triggerKey), TriggerState.NORMAL);
+                triggersByKey.set(newTrigger.key, newTrigger);
+            }
+        } finally {
+            try {
+                triggersByKey.unlock(triggerKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
         }
     }
 
-    for (String groupName : pausedGroups) {
-      for (JobKey jobKey : getJobKeys(GroupMatcher.jobGroupEquals(groupName))) {
-        pauseJob(jobKey);
-      }
-    }
-    return pausedGroups;
-  }
+    @Override
+    public Collection<String> pauseTriggers(GroupMatcher<TriggerKey> matcher)
+            throws JobPersistenceException {
 
-  @Override
-  public Collection<String> resumeJobs(GroupMatcher<JobKey> matcher)
-          throws JobPersistenceException {
+        List<String> pausedGroups = new LinkedList<>();
+        StringMatcher.StringOperatorName operator = matcher.getCompareWithOperator();
+        switch (operator) {
+            case EQUALS:
+                if (pausedTriggerGroups.add(matcher.getCompareToValue())) {
+                    pausedGroups.add(matcher.getCompareToValue());
+                }
+                break;
+            default:
+                for (String group : triggersByGroup.keySet()) {
+                    if (operator.evaluate(group, matcher.getCompareToValue())) {
+                        if (pausedTriggerGroups.add(matcher.getCompareToValue())) {
+                            pausedGroups.add(group);
+                        }
+                    }
+                }
+        }
 
-    Set<String> resumeGroups = new HashSet<>();
-    Set<JobKey> jobKeys = getJobKeys(matcher);
-    for (JobKey jobKey : jobKeys) {
-      resumeGroups.add(jobKey.getGroup());
-      resumeJob(jobKey);
+        for (String pausedGroup : pausedGroups) {
+            Set<TriggerKey> keys = getTriggerKeys(GroupMatcher.triggerGroupEquals(pausedGroup));
+            for (TriggerKey key : keys) {
+                pauseTrigger(key);
+            }
+        }
+        return pausedGroups;
     }
+
+    @Override
+    public Collection<String> resumeTriggers(GroupMatcher<TriggerKey> matcher) throws JobPersistenceException {
+
+        Set<String> resumeGroups = new HashSet<>();
+        Set<TriggerKey> keys = getTriggerKeys(matcher);
+        for (TriggerKey triggerKey : keys) {
+            resumeGroups.add(triggerKey.getGroup());
+            TriggerWrapper tw = triggersByKey.get(triggerKey);
+            OperableTrigger trigger = tw.getTrigger();
+            String jobGroup = trigger.getJobKey().getGroup();
+            if (pausedJobGroups.contains(jobGroup)) {
+                continue;
+            }
+            resumeTrigger(triggerKey);
+        }
+        for (String group : resumeGroups) {
+            pausedTriggerGroups.remove(group);
+        }
+        return new ArrayList<>(resumeGroups);
+    }
+
+    @Override
+    public void pauseJob(JobKey jobKey) throws JobPersistenceException {
+
+        boolean found = jobsByKey.containsKey(jobKey);
+        if (!found) {
+            return;
+        }
+        jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
+        try {
+            List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
+            for (OperableTrigger trigger : triggersForJob) {
+                pauseTrigger(trigger.getKey());
+            }
+        } finally {
+            try {
+                jobsByKey.unlock(jobKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
+        }
+    }
+
+    @Override
+    public void resumeJob(JobKey jobKey) throws JobPersistenceException {
+
+        boolean found = jobsByKey.containsKey(jobKey);
+        if (!found) {
+            return;
+        }
+        jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
+        try {
+            List<OperableTrigger> triggersForJob = getTriggersForJob(jobKey);
+            for (OperableTrigger trigger : triggersForJob) {
+                resumeTrigger(trigger.getKey());
+            }
+        } finally {
+            try {
+                jobsByKey.unlock(jobKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
+        }
+    }
+
+    @Override
+    public Collection<String> pauseJobs(GroupMatcher<JobKey> groupMatcher)
+            throws JobPersistenceException {
+
+        List<String> pausedGroups = new LinkedList<>();
+        StringMatcher.StringOperatorName operator = groupMatcher
+                .getCompareWithOperator();
+        switch (operator) {
+            case EQUALS:
+                if (pausedJobGroups.add(groupMatcher.getCompareToValue())) {
+                    pausedGroups.add(groupMatcher.getCompareToValue());
+                }
+                break;
+            default:
+                for (String jobGroup : jobsByGroup.keySet()) {
+                    if (operator.evaluate(jobGroup, groupMatcher.getCompareToValue())) {
+                        if (pausedJobGroups.add(jobGroup)) {
+                            pausedGroups.add(jobGroup);
+                        }
+                    }
+                }
+        }
+
+        for (String groupName : pausedGroups) {
+            for (JobKey jobKey : getJobKeys(GroupMatcher.jobGroupEquals(groupName))) {
+                pauseJob(jobKey);
+            }
+        }
+        return pausedGroups;
+    }
+
+    @Override
+    public Collection<String> resumeJobs(GroupMatcher<JobKey> matcher) throws JobPersistenceException {
+
+        Set<String> resumeGroups = new HashSet<>();
+        Set<JobKey> jobKeys = getJobKeys(matcher);
+        for (JobKey jobKey : jobKeys) {
+            resumeGroups.add(jobKey.getGroup());
+            resumeJob(jobKey);
+        }
         /*
         // Lambda fonction non compatible JDK 7 :
         resumeGroups.stream().forEach((group) -> {
             pausedJobGroups.remove(group);
         });
         */
-    // Code compatible JDK 7 :
-    for (String group : resumeGroups) {
-      pausedJobGroups.remove(group);
-    }
-    return new ArrayList<>(resumeGroups);
-  }
-
-  @Override
-  public Set<String> getPausedTriggerGroups()
-          throws JobPersistenceException {
-
-    return new HashSet<>(pausedTriggerGroups);
-  }
-
-  @Override
-  public void pauseAll()
-          throws JobPersistenceException {
-
-    for (String triggerGroup : triggersByGroup.keySet()) {
-      pauseTriggers(GroupMatcher.triggerGroupEquals(triggerGroup));
-    }
-  }
-
-  @Override
-  public void resumeAll()
-          throws JobPersistenceException {
-
-    List<String> triggerGroupNames = getTriggerGroupNames();
-    for (String triggerGroup : triggerGroupNames) {
-      resumeTriggers(GroupMatcher.triggerGroupEquals(triggerGroup));
-    }
-  }
-
-  /**
-   * @return @throws org.quartz.JobPersistenceException
-   * @see org.quartz.spi.JobStore#acquireNextTriggers(long, int, long)
-   *
-   * @param noLaterThan
-   *          highest value of <code>getNextFireTime()</code> of the
-   *          triggers (exclusive)
-   * @param timeWindow
-   *          highest value of <code>getNextFireTime()</code> of the
-   *          triggers (inclusive)
-   * @param maxCount
-   *          maximum number of trigger keys allow to acquired in the
-   *          returning list.
-   * @throws JobPersistenceException when a JobPersistenceException occurs
-   */
-  @Override
-  public List<OperableTrigger> acquireNextTriggers(long noLaterThan,
-                                                   int maxCount, long timeWindow)
-          throws JobPersistenceException {
-
-    if (triggersByKey.isEmpty()) {
-      return Collections.EMPTY_LIST;
+        // Code compatible JDK 7 :
+        for (String group : resumeGroups) {
+            pausedJobGroups.remove(group);
+        }
+        return new ArrayList<>(resumeGroups);
     }
 
-    long limit = noLaterThan + timeWindow;
+    @Override
+    public Set<String> getPausedTriggerGroups() throws JobPersistenceException {
+        return new HashSet<>(pausedTriggerGroups);
+    }
 
-    List<OperableTrigger> result = new ArrayList<>();
-    Set<JobKey> acquiredJobKeysForNoConcurrentExec = new HashSet<>();
-    Set<TriggerWrapper> excludedTriggers = new HashSet<>();
+    @Override
+    public void pauseAll() throws JobPersistenceException {
 
-    // ordering triggers to try to ensure firetime order
-    List<TriggerWrapper> orderedTriggers = new ArrayList<>(triggersByKey.values(new TriggersPredicate(limit)));
-    Collections.sort(orderedTriggers);
+        for (String triggerGroup : triggersByGroup.keySet()) {
+            pauseTriggers(GroupMatcher.triggerGroupEquals(triggerGroup));
+        }
+    }
 
-    for (int i = 0; i < orderedTriggers.size(); i++) {
-      TriggerWrapper tw = orderedTriggers.get(i);
-      // proced after the other jobstore already not blocked
-      triggersByKey.lock(tw.key, 5, TimeUnit.SECONDS);
-      try {
+    @Override
+    public void resumeAll() throws JobPersistenceException {
 
-        // when the trigger was in acquired state for to much time
-        if (tw.getState() == TriggerState.ACQUIRED && (tw.getAcquiredAt() == null
-                || tw.getAcquiredAt() + triggerReleaseThreshold + timeWindow < limit)) {
-          LOG.warn("Found a lost trigger [{}] that should be released at [{}]", tw, limit);
-          releaseAcquiredTrigger(tw.trigger);
-          tw = triggersByKey.get(tw.key);
+        List<String> triggerGroupNames = getTriggerGroupNames();
+        for (String triggerGroup : triggerGroupNames) {
+            resumeTriggers(GroupMatcher.triggerGroupEquals(triggerGroup));
+        }
+    }
+
+    /**
+     * @param noLaterThan highest value of <code>getNextFireTime()</code> of the
+     *                    triggers (exclusive)
+     * @param timeWindow  highest value of <code>getNextFireTime()</code> of the
+     *                    triggers (inclusive)
+     * @param maxCount    maximum number of trigger keys allow to acquired in the
+     *                    returning list.
+     * @return @throws org.quartz.JobPersistenceException
+     * @throws JobPersistenceException when a JobPersistenceException occurs
+     * @see org.quartz.spi.JobStore#acquireNextTriggers(long, int, long)
+     */
+    @Override
+    public List<OperableTrigger> acquireNextTriggers(long noLaterThan,
+                                                     int maxCount, long timeWindow)
+            throws JobPersistenceException {
+
+        if (triggersByKey.isEmpty()) {
+            return Collections.EMPTY_LIST;
         }
 
-        if (tw.getState() != TriggerState.NORMAL && tw.getState() != TriggerState.WAITING) {
-          continue;
+        long limit = noLaterThan + timeWindow;
+
+        List<OperableTrigger> result = new ArrayList<>();
+        Set<JobKey> acquiredJobKeysForNoConcurrentExec = new HashSet<>();
+        Set<TriggerWrapper> excludedTriggers = new HashSet<>();
+
+        // ordering triggers to try to ensure firetime order
+        List<TriggerWrapper> orderedTriggers = new ArrayList<>(triggersByKey.values(new TriggersPredicate(limit)));
+        Collections.sort(orderedTriggers);
+
+        for (int i = 0; i < orderedTriggers.size(); i++) {
+            TriggerWrapper tw = orderedTriggers.get(i);
+            // proced after the other jobstore already not blocked
+            triggersByKey.lock(tw.key, 5, TimeUnit.SECONDS);
+            try {
+
+                // when the trigger was in acquired state for to much time
+                if (tw.getState() == TriggerState.ACQUIRED && (tw.getAcquiredAt() == null
+                        || tw.getAcquiredAt() + triggerReleaseThreshold + timeWindow < limit)) {
+                    LOG.warn("Found a lost trigger [{}] that should be released at [{}]", tw, limit);
+                    releaseAcquiredTrigger(tw.trigger);
+                    tw = triggersByKey.get(tw.key);
+                }
+
+                if (tw.getState() != TriggerState.NORMAL && tw.getState() != TriggerState.WAITING) {
+                    continue;
+                }
+
+                if (tw.trigger.getNextFireTime() == null) {
+                    continue;
+                }
+
+                if (applyMisfire(tw)) {
+                    LOG.debug("Misfire applied {}", tw);
+                    if (tw.trigger.getNextFireTime() != null) {
+                        tw = TriggerWrapper.newTriggerWrapper(tw, TriggerState.NORMAL);
+                    } else {
+                        continue;
+                    }
+                }
+
+                if (tw.getTrigger().getNextFireTime().getTime() > limit) {
+                    storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.NORMAL));
+                    continue;
+                }
+
+                final JobKey jobKey = tw.trigger.getJobKey();
+                final JobDetail job = jobsByKey.get(tw.trigger.getJobKey());
+
+                // If trigger's job is set as @DisallowConcurrentExecution, and it has
+                // already been added to result, then
+                // put it back into the timeTriggers set and continue to search for next
+                // trigger.
+                if (job == null) {
+                    LOG.debug("Job not found");
+                    continue;
+                } else if (job.isConcurrentExectionDisallowed()) {
+                    if (acquiredJobKeysForNoConcurrentExec.contains(jobKey)) {
+                        continue; // go to next trigger in queue.
+                    } else {
+                        acquiredJobKeysForNoConcurrentExec.add(jobKey);
+                    }
+                }
+
+                OperableTrigger trig = (OperableTrigger) tw.trigger.clone();
+                trig.setFireInstanceId(getFiredTriggerRecordId());
+                storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(trig, TriggerState.ACQUIRED));
+
+                result.add(trig);
+
+                if (result.size() == maxCount) {
+                    break;
+                }
+            } finally {
+                try {
+                    triggersByKey.unlock(tw.key);
+                } catch (IllegalMonitorStateException ex) {
+                    LOG.warn("Error unlocking since it is already released.", ex);
+                }
+            }
         }
 
-        if (tw.trigger.getNextFireTime() == null) {
-          continue;
-        }
+        return result;
+    }
 
-        if (applyMisfire(tw)) {
-          LOG.debug("Misfire applied {}", tw);
-          if (tw.trigger.getNextFireTime() != null) {
-            tw = TriggerWrapper.newTriggerWrapper(tw, TriggerState.NORMAL);
-          } else {
-            continue;
-          }
-        }
+    @Override
+    public void releaseAcquiredTrigger(OperableTrigger trigger) {
 
-        if (tw.getTrigger().getNextFireTime().getTime() > limit) {
-          storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.NORMAL));
-          continue;
-        }
-
-        final JobKey jobKey = tw.trigger.getJobKey();
-        final JobDetail job = jobsByKey.get(tw.trigger.getJobKey());
-
-        // If trigger's job is set as @DisallowConcurrentExecution, and it has
-        // already been added to result, then
-        // put it back into the timeTriggers set and continue to search for next
-        // trigger.
-        if (job == null) {
-          LOG.debug("Job not found");
-          continue;
-        } else if(job.isConcurrentExectionDisallowed()) {
-          if (acquiredJobKeysForNoConcurrentExec.contains(jobKey)) {
-            continue; // go to next trigger in queue.
-          } else {
-            acquiredJobKeysForNoConcurrentExec.add(jobKey);
-          }
-        }
-
-        OperableTrigger trig = (OperableTrigger) tw.trigger.clone();
-        trig.setFireInstanceId(getFiredTriggerRecordId());
-        storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(trig, TriggerState.ACQUIRED));
-
-        result.add(trig);
-
-        if (result.size() == maxCount) {
-          break;
-        }
-      } finally {
+        TriggerKey triggerKey = trigger.getKey();
+        triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
         try {
-          triggersByKey.unlock(tw.key);
-        } catch (IllegalMonitorStateException ex) {
-          LOG.warn("Error unlocking since it is already released.", ex);
+            storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(trigger, TriggerState.WAITING));
+        } finally {
+            try {
+                triggersByKey.unlock(triggerKey);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
         }
-      }
     }
 
-    return result;
-  }
+    @Override
+    public List<TriggerFiredResult> triggersFired(List<OperableTrigger> firedTriggers) throws JobPersistenceException {
 
-  @Override
-  public void releaseAcquiredTrigger(OperableTrigger trigger) {
+        List<TriggerFiredResult> results = new ArrayList<>();
 
-    TriggerKey triggerKey = trigger.getKey();
-    triggersByKey.lock(triggerKey, 5, TimeUnit.SECONDS);
-    try {
-      storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(trigger, TriggerState.WAITING));
-    } finally {
-      try {
-        triggersByKey.unlock(triggerKey);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
+        for (OperableTrigger trigger : firedTriggers) {
+
+            triggersByKey.lock(trigger.getKey(), 5, TimeUnit.SECONDS);
+            try {
+                TriggerWrapper tw = triggersByKey.get(trigger.getKey());
+                // was the trigger deleted since being acquired?
+                if (tw == null || tw.trigger == null) {
+                    continue;
+                }
+                // was the trigger completed, paused, blocked, etc. since being acquired?
+                if (tw.getState() != TriggerState.ACQUIRED) {
+                    continue;
+                }
+
+                Calendar cal = null;
+                if (tw.trigger.getCalendarName() != null) {
+                    cal = retrieveCalendar(tw.trigger.getCalendarName());
+                    if (cal == null) {
+                        continue;
+                    }
+                }
+                Date prevFireTime = trigger.getPreviousFireTime();
+                // call triggered on our copy, and the scheduler's copy
+                tw.trigger.triggered(cal);
+                trigger.triggered(cal);
+
+                JobDetail job = retrieveJob(tw.jobKey);
+
+                if (job.isConcurrentExectionDisallowed()) {
+
+                    ArrayList<TriggerWrapper> trigs = getTriggerWrappersForJob(job.getKey());
+                    for (TriggerWrapper ttw : trigs) {
+                        if (ttw.getState() == TriggerState.WAITING) {
+                            ttw = TriggerWrapper.newTriggerWrapper(ttw, TriggerState.BLOCKED);
+                        } else if (ttw.getState() == TriggerState.PAUSED) {
+                            ttw = TriggerWrapper.newTriggerWrapper(ttw, TriggerState.PAUSED_BLOCKED);
+                        }
+                    }
+
+                    tw = TriggerWrapper.newTriggerWrapper(trigger, TriggerState.ACQUIRED);
+
+                } else {
+                    tw = TriggerWrapper.newTriggerWrapper(trigger, TriggerState.WAITING);
+                }
+
+
+                if (tw.trigger.getNextFireTime() != null) {
+                    storeTriggerWrapper(tw);
+                }
+
+                TriggerFiredBundle bndle = new TriggerFiredBundle(
+                        retrieveJob(tw.jobKey),
+                        trigger,
+                        cal,
+                        false,
+                        new Date(),
+                        trigger.getPreviousFireTime(),
+                        prevFireTime,
+                        trigger.getNextFireTime());
+
+                results.add(new TriggerFiredResult(bndle));
+            } finally {
+                try {
+                    triggersByKey.unlock(trigger.getKey());
+                } catch (IllegalMonitorStateException ex) {
+                    LOG.warn("Error unlocking since it is already released.", ex);
+                }
+            }
+        }
+
+        return results;
     }
-  }
 
-  @Override
-  public List<TriggerFiredResult> triggersFired(
-          List<OperableTrigger> firedTriggers)
-          throws JobPersistenceException {
+    @Override
+    public void triggeredJobComplete(OperableTrigger trigger, JobDetail jobDetail,
+                                     Trigger.CompletedExecutionInstruction triggerInstCode) {
 
-    List<TriggerFiredResult> results = new ArrayList<>();
-
-    for (OperableTrigger trigger : firedTriggers) {
-
-      triggersByKey.lock(trigger.getKey(), 5, TimeUnit.SECONDS);
-      try {
         TriggerWrapper tw = triggersByKey.get(trigger.getKey());
-        // was the trigger deleted since being acquired?
-        if (tw == null || tw.trigger == null) {
-          continue;
-        }
-        // was the trigger completed, paused, blocked, etc. since being acquired?
-        if (tw.getState() != TriggerState.ACQUIRED) {
-          continue;
-        }
 
-        Calendar cal = null;
-        if (tw.trigger.getCalendarName() != null) {
-          cal = retrieveCalendar(tw.trigger.getCalendarName());
-          if (cal == null) {
-            continue;
-          }
-        }
-        Date prevFireTime = trigger.getPreviousFireTime();
-        // call triggered on our copy, and the scheduler's copy
-        tw.trigger.triggered(cal);
-        trigger.triggered(cal);
-
-        JobDetail job = retrieveJob(tw.jobKey);
-
-        if (job.isConcurrentExectionDisallowed()) {
-
-          ArrayList<TriggerWrapper> trigs = getTriggerWrappersForJob(job.getKey());
-          for (TriggerWrapper ttw : trigs) {
-            if (ttw.getState() == TriggerState.WAITING) {
-              ttw = TriggerWrapper.newTriggerWrapper(ttw, TriggerState.BLOCKED);
-            } else if (ttw.getState() == TriggerState.PAUSED) {
-              ttw = TriggerWrapper.newTriggerWrapper(ttw, TriggerState.PAUSED_BLOCKED);
+        if (jobDetail.isPersistJobDataAfterExecution()) {
+            JobKey jobKey = jobDetail.getKey();
+            jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
+            try {
+                jobsByKey.set(jobKey, jobDetail);
+                jobsByGroup.put(jobKey.getGroup(), jobKey);
+            } finally {
+                try {
+                    jobsByKey.unlock(jobKey);
+                } catch (IllegalMonitorStateException ex) {
+                    LOG.warn("Error unlocking since it is already released.", ex);
+                }
             }
-          }
+        } else if (jobDetail.isConcurrentExectionDisallowed()) {
 
-          tw = TriggerWrapper.newTriggerWrapper(trigger, TriggerState.ACQUIRED);
+            ArrayList<TriggerWrapper> trigs = getTriggerWrappersForJob(jobDetail.getKey());
 
-        } else {
-          tw = TriggerWrapper.newTriggerWrapper(trigger, TriggerState.WAITING);
-        }
-
-
-        if (tw.trigger.getNextFireTime() != null) {
-          storeTriggerWrapper(tw);
-        }
-
-        TriggerFiredBundle bndle = new TriggerFiredBundle(
-                retrieveJob(tw.jobKey),
-                trigger,
-                cal,
-                false,
-                new Date(),
-                trigger.getPreviousFireTime(),
-                prevFireTime,
-                trigger.getNextFireTime());
-
-        results.add(new TriggerFiredResult(bndle));
-      } finally {
-        try {
-          triggersByKey.unlock(trigger.getKey());
-        } catch (IllegalMonitorStateException ex) {
-          LOG.warn("Error unlocking since it is already released.", ex);
-        }
-      }
-    }
-
-    return results;
-  }
-
-  @Override
-  public void triggeredJobComplete(
-          OperableTrigger trigger,
-          JobDetail jobDetail,
-          Trigger.CompletedExecutionInstruction triggerInstCode) {
-
-    TriggerWrapper tw = triggersByKey.get(trigger.getKey());
-
-    if (jobDetail.isPersistJobDataAfterExecution()) {
-      JobKey jobKey = jobDetail.getKey();
-      jobsByKey.lock(jobKey, 5, TimeUnit.SECONDS);
-      try {
-        jobsByKey.set(jobKey, jobDetail);
-        jobsByGroup.put(jobKey.getGroup(), jobKey);
-      } finally {
-        try {
-          jobsByKey.unlock(jobKey);
-        } catch (IllegalMonitorStateException ex) {
-          LOG.warn("Error unlocking since it is already released.", ex);
-        }
-      }
-    } else if (jobDetail.isConcurrentExectionDisallowed()) {
-
-      ArrayList<TriggerWrapper> trigs = getTriggerWrappersForJob(jobDetail.getKey());
-
-      for (TriggerWrapper ttw : trigs) {
-        if (ttw.getState() == TriggerState.BLOCKED || ttw.getState() == TriggerState.ACQUIRED) {
-          storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(ttw, TriggerState.WAITING));
-        } else if (ttw.getState() == TriggerState.PAUSED_BLOCKED) {
-          storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(ttw, TriggerState.PAUSED));
-        }
-      }
-      schedSignaler.signalSchedulingChange(0L);
-    }
-
-    // check for trigger deleted during execution...
-    if (tw != null) {
-      if (triggerInstCode == Trigger.CompletedExecutionInstruction.DELETE_TRIGGER) {
-
-        try {
-          if (trigger.getNextFireTime() == null) {
-            // double check for possible reschedule within job
-            // execution, which would cancel the need to delete...
-            if (tw.getTrigger().getNextFireTime() == null) {
-
-              removeTrigger(trigger.getKey());
-
+            for (TriggerWrapper ttw : trigs) {
+                if (ttw.getState() == TriggerState.BLOCKED || ttw.getState() == TriggerState.ACQUIRED) {
+                    storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(ttw, TriggerState.WAITING));
+                } else if (ttw.getState() == TriggerState.PAUSED_BLOCKED) {
+                    storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(ttw, TriggerState.PAUSED));
+                }
             }
-          } else {
-            removeTrigger(trigger.getKey());
             schedSignaler.signalSchedulingChange(0L);
-          }
-        } catch (JobPersistenceException ex) {
-          LOG.error("Error removing trigger", ex);
         }
-      } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_TRIGGER_COMPLETE) {
-        storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
-        schedSignaler.signalSchedulingChange(0L);
-      } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_TRIGGER_ERROR) {
-        LOG.warn("Trigger " + trigger.getKey() + " set to ERROR state.");
-        storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.BLOCKED));
-        schedSignaler.signalSchedulingChange(0L);
-      } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_ALL_JOB_TRIGGERS_ERROR) {
-        LOG.info("All triggers of Job "
-                + trigger.getJobKey() + " set to ERROR state.");
-        storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.BLOCKED));
-        schedSignaler.signalSchedulingChange(0L);
-      } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_ALL_JOB_TRIGGERS_COMPLETE) {
-        storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
-        schedSignaler.signalSchedulingChange(0L);
-      }
+
+        // check for trigger deleted during execution...
+        if (tw != null) {
+            if (triggerInstCode == Trigger.CompletedExecutionInstruction.DELETE_TRIGGER) {
+
+                try {
+                    if (trigger.getNextFireTime() == null) {
+                        // double check for possible reschedule within job
+                        // execution, which would cancel the need to delete...
+                        if (tw.getTrigger().getNextFireTime() == null) {
+
+                            removeTrigger(trigger.getKey());
+
+                        }
+                    } else {
+                        removeTrigger(trigger.getKey());
+                        schedSignaler.signalSchedulingChange(0L);
+                    }
+                } catch (JobPersistenceException ex) {
+                    LOG.error("Error removing trigger", ex);
+                }
+            } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_TRIGGER_COMPLETE) {
+                storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
+                schedSignaler.signalSchedulingChange(0L);
+            } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_TRIGGER_ERROR) {
+                LOG.warn("Trigger " + trigger.getKey() + " set to ERROR state.");
+                storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.BLOCKED));
+                schedSignaler.signalSchedulingChange(0L);
+            } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_ALL_JOB_TRIGGERS_ERROR) {
+                LOG.info("All triggers of Job "
+                        + trigger.getJobKey() + " set to ERROR state.");
+                storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.BLOCKED));
+                schedSignaler.signalSchedulingChange(0L);
+            } else if (triggerInstCode == Trigger.CompletedExecutionInstruction.SET_ALL_JOB_TRIGGERS_COMPLETE) {
+                storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
+                schedSignaler.signalSchedulingChange(0L);
+            }
+        }
     }
-  }
 
-  @Override
-  public void setInstanceName(final String instanceName) {
+    @Override
+    public void setInstanceName(final String instanceName) {
+        this.instanceName = instanceName;
+    }
 
-    this.instanceName = instanceName;
-  }
+    @Override
+    public void setInstanceId(String instanceId) {
+        this.instanceId = instanceId;
+    }
 
-  @Override
-  public void setInstanceId(String instanceId) {
+    public void setShutdownHazelcastOnShutdown(boolean shutdownHazelcastOnShutdown) {
+        this.shutdownHazelcastOnShutdown = shutdownHazelcastOnShutdown;
+    }
 
-    this.instanceId = instanceId;
-  }
+    public long getMisfireThreshold() {
+        return misfireThreshold;
+    }
 
-  public void setShutdownHazelcastOnShutdown(boolean shutdownHazelcastOnShutdown) {
+    public void setMisfireThreshold(long misfireThreshold) {
+        this.misfireThreshold = misfireThreshold;
+    }
 
-    this.shutdownHazelcastOnShutdown = shutdownHazelcastOnShutdown;
-  }
+    @Override
+    public void setThreadPoolSize(int poolSize) {
+        // not need
+    }
 
-  public long getMisfireThreshold() {
+    private ArrayList<TriggerWrapper> getTriggerWrappersForJob(JobKey jobKey) {
 
-    return misfireThreshold;
-  }
-
-  public void setMisfireThreshold(long misfireThreshold) {
-
-    this.misfireThreshold = misfireThreshold;
-  }
-
-  @Override
-  public void setThreadPoolSize(int poolSize) {
-
-    // not need
-  }
-
-  private ArrayList<TriggerWrapper> getTriggerWrappersForJob(JobKey jobKey) {
-
-    ArrayList<TriggerWrapper> trigList = new ArrayList<>();
+        ArrayList<TriggerWrapper> trigList = new ArrayList<>();
 
         /*
         // Lambda fonction non compatible JDK 7 :
@@ -1140,153 +1044,116 @@ public class HazelcastJobStore implements JobStore, Serializable {
             trigList.add(trigger);
         });
         */
-    // Code compatible JDK 7 :
-    for (TriggerWrapper trigger : triggersByKey.values()) {
-      if (trigger.jobKey.equals(jobKey)) {
-        trigList.add(trigger);
-      }
-    }
-
-    return trigList;
-  }
-
-  private boolean applyMisfire(TriggerWrapper tw)
-          throws JobPersistenceException {
-
-    long misfireTime = DateBuilder.newDate().build().getTime();
-    if (misfireThreshold > 0) {
-      misfireTime -= misfireThreshold;
-    }
-
-    Date tnft = tw.trigger.getNextFireTime();
-
-    if (tnft == null
-            || tnft.getTime() > misfireTime
-            || tw.trigger.getMisfireInstruction() == Trigger.MISFIRE_INSTRUCTION_IGNORE_MISFIRE_POLICY) {
-      return false;
-    }
-
-    Calendar cal = null;
-    if (tw.trigger.getCalendarName() != null) {
-      cal = retrieveCalendar(tw.trigger.getCalendarName());
-    }
-
-    this.schedSignaler
-            .notifyTriggerListenersMisfired((OperableTrigger) tw.trigger.clone());
-
-    tw.trigger.updateAfterMisfire(cal);
-
-    if (tw.trigger.getNextFireTime() == null) {
-      storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
-      schedSignaler.notifySchedulerListenersFinalized(tw.trigger);
-
-    } else if (tnft.equals(tw.trigger.getNextFireTime())) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private synchronized String getFiredTriggerRecordId() {
-
-    return instanceId + ftrCtr++;
-  }
-
-  private boolean removeTrigger(TriggerKey key, boolean removeOrphanedJob)
-          throws JobPersistenceException {
-
-    boolean removed = false;
-
-    // remove from triggers by FQN map
-    triggersByKey.lock(key, 5, TimeUnit.SECONDS);
-    try {
-      final TriggerWrapper tw = triggersByKey.remove(key);
-      removed = tw != null;
-      if (removed) {
-        // remove from triggers by group
-        triggersByGroup.remove(key.getGroup(), key);
-        //        triggers.remove(tw);
-
-        if (removeOrphanedJob) {
-          JobDetail job = jobsByKey.get(tw.jobKey);
-          List<OperableTrigger> trigs = getTriggersForJob(tw.jobKey);
-          if ((trigs == null || trigs.isEmpty()) && !job.isDurable()) {
-            if (removeJob(job.getKey())) {
-              schedSignaler.notifySchedulerListenersJobDeleted(job.getKey());
+        // Code compatible JDK 7 :
+        for (TriggerWrapper trigger : triggersByKey.values()) {
+            if (trigger.jobKey.equals(jobKey)) {
+                trigList.add(trigger);
             }
-          }
         }
-      }
-    } finally {
-      try {
-        triggersByKey.unlock(key);
-      } catch (IllegalMonitorStateException ex) {
-        LOG.warn("Error unlocking since it is already released.", ex);
-      }
+
+        return trigList;
     }
 
-    return removed;
-  }
+    private boolean applyMisfire(TriggerWrapper tw)
+            throws JobPersistenceException {
 
-  private void storeTriggerWrapper(final TriggerWrapper tw) {
+        long misfireTime = DateBuilder.newDate().build().getTime();
+        if (misfireThreshold > 0) {
+            misfireTime -= misfireThreshold;
+        }
 
-    triggersByKey.set(tw.key, tw);
-  }
+        Date tnft = tw.trigger.getNextFireTime();
 
-  /**
-   * Set the max time which a acquired trigger must be released.
-   * It should be up to 30000, since quartz executes acquireNextTriggers in a 30000 interval
-   *
-   * @param triggerReleaseThreshold the triggerReleaseThreshold
-   */
-  public void setTriggerReleaseThreshold(long triggerReleaseThreshold) {
-    if (triggerReleaseThreshold > 30000) {
-      LOG.warn(
-              "Try to increase your trigger release time threashold since quartz acquireNextTriggers in a 30000 interval");
-    }
-    this.triggerReleaseThreshold = triggerReleaseThreshold;
-  }
+        if (tnft == null
+                || tnft.getTime() > misfireTime
+                || tw.trigger.getMisfireInstruction() == Trigger.MISFIRE_INSTRUCTION_IGNORE_MISFIRE_POLICY) {
+            return false;
+        }
 
-}
+        Calendar cal = null;
+        if (tw.trigger.getCalendarName() != null) {
+            cal = retrieveCalendar(tw.trigger.getCalendarName());
+        }
 
-/**
- * Filter triggers with a given job key
- */
-class TriggerByJobPredicate implements Predicate<JobKey, TriggerWrapper> {
+        this.schedSignaler
+                .notifyTriggerListenersMisfired((OperableTrigger) tw.trigger.clone());
 
-  private JobKey key;
+        tw.trigger.updateAfterMisfire(cal);
 
-  public TriggerByJobPredicate(JobKey key) {
+        if (tw.trigger.getNextFireTime() == null) {
+            storeTriggerWrapper(TriggerWrapper.newTriggerWrapper(tw, TriggerState.STATE_COMPLETED));
+            schedSignaler.notifySchedulerListenersFinalized(tw.trigger);
 
-    this.key = key;
-  }
+        } else if (tnft.equals(tw.trigger.getNextFireTime())) {
+            return false;
+        }
 
-  @Override
-  public boolean apply(Map.Entry<JobKey, TriggerWrapper> entry) {
-
-    return key != null && entry != null && key.equals(entry.getValue().jobKey);
-  }
-}
-
-/**
- * Filter triggers with a given fire start time, end time and state.
- */
-class TriggersPredicate implements Predicate<TriggerKey, TriggerWrapper> {
-
-  long noLaterThanWithTimeWindow;
-
-  public TriggersPredicate(long noLaterThanWithTimeWindow) {
-
-    this.noLaterThanWithTimeWindow = noLaterThanWithTimeWindow;
-  }
-
-  @Override
-  public boolean apply(Map.Entry<TriggerKey, TriggerWrapper> entry) {
-
-    if (entry.getValue() == null || entry.getValue().getNextFireTime() == null) {
-      return false;
+        return true;
     }
 
-    return entry.getValue().getNextFireTime() <= noLaterThanWithTimeWindow;
-  }
+    private synchronized String getFiredTriggerRecordId() {
+        return instanceId + ftrCtr++;
+    }
+
+    private boolean removeTrigger(TriggerKey key, boolean removeOrphanedJob) throws JobPersistenceException {
+
+        boolean removed = false;
+
+        // remove from triggers by FQN map
+        triggersByKey.lock(key, 5, TimeUnit.SECONDS);
+        try {
+            final TriggerWrapper tw = triggersByKey.remove(key);
+            removed = tw != null;
+            if (removed) {
+                // remove from triggers by group
+                triggersByGroup.remove(key.getGroup(), key);
+                //        triggers.remove(tw);
+
+                if (removeOrphanedJob) {
+                    JobDetail job = jobsByKey.get(tw.jobKey);
+                    List<OperableTrigger> trigs = getTriggersForJob(tw.jobKey);
+                    if ((trigs == null || trigs.isEmpty()) && !job.isDurable()) {
+                        if (removeJob(job.getKey())) {
+                            schedSignaler.notifySchedulerListenersJobDeleted(job.getKey());
+                        }
+                    }
+                }
+            }
+        } finally {
+            try {
+                triggersByKey.unlock(key);
+            } catch (IllegalMonitorStateException ex) {
+                LOG.warn("Error unlocking since it is already released.", ex);
+            }
+        }
+
+        return removed;
+    }
+
+    private void storeTriggerWrapper(final TriggerWrapper tw) {
+        triggersByKey.set(tw.key, tw);
+    }
+
+    /**
+     * Set the max time which a acquired trigger must be released.
+     * It should be up to 30000, since quartz executes acquireNextTriggers in a 30000 interval
+     *
+     * @param triggerReleaseThreshold the triggerReleaseThreshold
+     */
+    public void setTriggerReleaseThreshold(long triggerReleaseThreshold) {
+        if (triggerReleaseThreshold > 30000) {
+            LOG.warn(
+                    "Try to increase your trigger release time threashold since quartz acquireNextTriggers in a 30000 interval");
+        }
+        this.triggerReleaseThreshold = triggerReleaseThreshold;
+    }
+
+
+    /**
+     * @param aHazelcastClient a setter.
+     */
+    public static void setHazelcastClient(final HazelcastInstance aHazelcastClient) {
+        hazelcastClient = aHazelcastClient;
+    }
+
 }
