@@ -191,6 +191,24 @@ public class QuartzTest extends AbstractTest {
     }
 
     @Test
+    public void testScheduleJobWithNoRepeatTime()
+            throws Exception {
+
+        JobDetail job1 = buildJob("Job11", DEFAULT_GROUP, MyJob.class);
+
+        final SimpleTriggerImpl o = (SimpleTriggerImpl) buildTrigger("key11", DEFAULT_GROUP, job1);
+        o.setRepeatInterval(100);
+        o.setRepeatCount(0);
+
+        scheduler.scheduleJob(job1, o);
+        // it really needs to wait to be sure that it is not found as a lost trigger
+        Thread.sleep(60000);
+
+        assertEquals(MyJob.count, 1);
+        assertEquals(MyJob.triggerKeys.poll(), "key11");
+    }
+
+    @Test
     public void testScheduleJobWithRepeatTimeWithConcurrentExecutionDisallowed()
             throws Exception {
 
@@ -650,6 +668,26 @@ public class QuartzTest extends AbstractTest {
                 throw new AssertionError("Await on barrier was interrupted: " + e.toString());
             }
         }
+    }
+
+
+    @Test
+    public void testScheduleJobWithRepeatTimeWithConcurrentExecutionDisallowedAfterEnd()
+            throws Exception {
+
+        JobDetail job1 = buildJob("CJob1", DEFAULT_GROUP, MyNoConcurrentJob.class);
+        final SimpleTriggerImpl o = (SimpleTriggerImpl) buildTrigger("Ckey1", DEFAULT_GROUP, job1);
+        o.setRepeatInterval(100);
+        o.setRepeatCount(1);
+
+        MyNoConcurrentJob.waitTime = 200;
+
+        scheduler.scheduleJob(job1, o);
+        Thread.sleep(750);
+
+        // since MyNoCocurrent job takes 300 ms to finish
+        assertEquals(MyNoConcurrentJob.count, 2);
+        assertEquals(MyNoConcurrentJob.triggerKeys.poll(), "Ckey1");
     }
 
     @Test
