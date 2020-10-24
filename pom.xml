@@ -44,7 +44,7 @@
 
         <hazelcast.version>3.8.1</hazelcast.version>
         <quartz.version>2.2.3</quartz.version>
-        <guava.version>20.0</guava.version>
+        <guava.version>r03</guava.version>
         <joda.time.version>2.9.7</joda.time.version>
 
         <assertj.version>2.6.0</assertj.version>
